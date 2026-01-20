@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OverKill – Main Menu</title>
+<style>
+  body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    background: radial-gradient(circle at top, #ff00ff 0, #050010 55%, #000 100%);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .frame {
+    text-align: center;
+    padding: 30px 40px;
+    border: 2px solid #ff00ff;
+    box-shadow: 0 0 25px #ff00ff55;
+    background: rgba(5, 0, 20, 0.9);
+  }
+  h1 {
+    font-size: 48px;
+    letter-spacing: 6px;
+    margin-bottom: 10px;
+    text-shadow: 0 0 12px #ff00ff;
+  }
+  h1 span {
+    color: #00e5ff;
+  }
+  p {
+    margin: 4px 0 20px;
+    opacity: 0.8;
+    font-size: 14px;
+  }
+  .menu {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .menu a {
+    text-decoration: none;
+  }
+  .btn {
+    display: block;
+    padding: 10px 24px;
+    border: 1px solid #00e5ff;
+    color: #fff;
+    background: linear-gradient(90deg, #ff00ff33, #00e5ff33);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  }
+  .btn:hover {
+    background: linear-gradient(90deg, #ff00ff66, #00e5ff66);
+    transform: translateY(-1px);
+    box-shadow: 0 0 12px #00e5ff88;
+  }
+  .small {
+    font-size: 11px;
+    opacity: 0.7;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <h1><span>Over</span>Kill</h1>
+  <p>Retro neon browser FPS. Clear the arenas. Survive the waves.</p>
+  <div class="menu">
+    <a href="fps.html"><div class="btn">Start Game</div></a>
+    <a href="settings.html"><div class="btn">Settings</div></a>
+    <a href="visual_settings.html"><div class="btn">Visual Settings</div></a>
+    <a href="other_settings.html"><div class="btn">Other Settings</div></a>
+    <a href="about.html"><div class="btn">About</div></a>
+    <a href="exit_confirm.html"><div class="btn">Exit</div></a>
+  </div>
+  <div class="small">WASD to move · Mouse to look · Click to shoot</div>
+</div>
+</body>
+</html>
