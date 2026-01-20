@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OverKill – Visual Settings</title>
+<style>
+  body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    background: radial-gradient(circle at top, #00e5ff 0, #050010 55%, #000 100%);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+  }
+  .frame {
+    padding: 30px 40px;
+    border: 2px solid #ff00ff;
+    box-shadow: 0 0 25px #ff00ff55;
+    background: rgba(5, 0, 20, 0.9);
+    min-width: 320px;
+  }
+  h1 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    text-shadow: 0 0 10px #ff00ff;
+  }
+  label {
+    display: block;
+    margin: 8px 0 4px;
+    font-size: 13px;
+  }
+  select, input[type="checkbox"] {
+    margin-bottom: 6px;
+  }
+  .nav {
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .nav a {
+    text-decoration: none;
+  }
+  .btn {
+    padding: 6px 14px;
+    border: 1px solid #00e5ff;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+  .btn:hover {
+    background: rgba(0,0,0,0.9);
+    box-shadow: 0 0 10px #00e5ff88;
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <h1>Visual Settings</h1>
+  <label>Resolution Scale</label>
+  <select>
+    <option>Low</option>
+    <option selected>Medium</option>
+    <option>High</option>
+  </select>
+
+  <label><input type="checkbox" checked /> Neon Bloom</label>
+  <label><input type="checkbox" /> Scanline Overlay</label>
+  <label><input type="checkbox" /> Retro Pixelation</label>
+
+  <div class="nav">
+    <a href="settings.html"><div class="btn">Settings</div></a>
+    <a href="other_settings.html"><div class="btn">Other</div></a>
+    <a href="index.html"><div class="btn">Main Menu</div></a>
+    <a href="fps.html"><div class="btn">Play</div></a>
+  </div>
+</div>
+</body>
+</html>

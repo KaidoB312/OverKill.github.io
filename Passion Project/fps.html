@@ -1,0 +1,891 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OverKill – Arena (Fixed Collisions, Jump, Pitch)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --neon1:#ff00ff;
+    --neon2:#00e5ff;
+    --panel:rgba(5,0,20,0.9);
+  }
+  html,body{height:100%;margin:0;background:radial-gradient(circle at top left,var(--neon1) 0,#050018 40%,#000 100%);font-family:system-ui,Segoe UI,Roboto,Arial;color:#fff;overflow:hidden}
+  #gameCanvas{display:block;background:#000;image-rendering:pixelated}
+  #hud{position:fixed;left:12px;top:12px;z-index:20;font-size:13px;text-shadow:0 0 8px #00e5ff}
+  #hud div{margin:4px 0}
+  #hud .label{color:var(--neon1);margin-right:6px}
+  #crosshair{position:fixed;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;pointer-events:none;z-index:18}
+  #crosshair:before,#crosshair:after{content:"";position:absolute;background:rgba(255,255,255,0.95);box-shadow:0 0 8px #00e5ff}
+  #crosshair:before{left:8px;top:0;width:2px;height:18px}
+  #crosshair:after{top:8px;left:0;width:18px;height:2px}
+  #message{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);z-index:18;font-size:12px;text-shadow:0 0 8px #ff00ff}
+  #startOverlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:30}
+  .panel{padding:26px 32px;border:2px solid var(--neon2);background:var(--panel);box-shadow:0 0 30px #00e5ff55;text-align:center}
+  h1{margin:0 0 8px;font-size:44px;letter-spacing:4px;text-shadow:0 0 18px var(--neon1)}
+  h1 span{color:var(--neon2)}
+  .btn{display:inline-block;padding:10px 22px;margin:8px;border:none;background:linear-gradient(90deg,var(--neon1),var(--neon2));color:#000;font-weight:700;cursor:pointer;letter-spacing:1px}
+  #levelTextOverlay{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:29;font-size:26px;text-shadow:0 0 14px #ff00ff;opacity:0;transition:opacity .35s}
+  #levelTextOverlay.visible{opacity:1}
+  #topNav{position:fixed;right:12px;top:12px;z-index:21}
+  #topNav a{color:var(--neon2);text-decoration:none;padding:6px 10px;border:1px solid var(--neon2);background:rgba(0,0,0,0.45)}
+  @media (max-width:600px){h1{font-size:32px}.panel{padding:18px}}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div><span class="label">HP</span><span id="healthText">100</span></div>
+  <div><span class="label">Ammo</span><span id="ammoText">30</span></div>
+  <div><span class="label">Enemies</span><span id="enemyText">0</span></div>
+  <div><span class="label">Level</span><span id="levelText">1</span></div>
+</div>
+
+<div id="topNav"><a href="index.html">Menu</a></div>
+<div id="crosshair"></div>
+<div id="message">WASD to move · Mouse to look · Click to shoot · Space to jump · R to reload</div>
+
+<div id="startOverlay">
+  <div class="panel">
+    <h1><span>Over</span>Kill</h1>
+    <p style="opacity:.9;margin:6px 0 12px">Enhanced arenas, varied enemies, boss fights — retro neon edition.</p>
+    <div>
+      <button id="startButton" class="btn">Enter Arena</button>
+      <button id="levelSelectBtn" class="btn" style="background:linear-gradient(90deg,var(--neon2),var(--neon1));margin-left:8px">Level Select</button>
+    </div>
+    <p style="font-size:12px;opacity:.8;margin-top:10px">Tip: headshots deal extra damage. Ranged enemies fire projectiles. Boss has phases.</p>
+  </div>
+</div>
+
+<div id="levelTextOverlay"></div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+/*
+  OverKill – Fixes applied:
+  - Enemies spawn in free space (not inside walls/crates)
+  - Player can jump and look up/down (pitch)
+  - Crates are physical obstacles (block movement) and can be destroyed
+  - Defensive checks and small improvements
+*/
+
+// -------------------- Canvas & scaling --------------------
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let internalWidth = 360;
+let internalHeight = 200;
+let zBuffer = new Array(internalWidth);
+
+function resizeCanvas(){
+  const aspect = internalWidth / internalHeight;
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  if (w / h > aspect) { w = h * aspect; } else { h = w / aspect; }
+  canvas.width = internalWidth;
+  canvas.height = internalHeight;
+  canvas.style.width = Math.floor(w) + 'px';
+  canvas.style.height = Math.floor(h) + 'px';
+  zBuffer = new Array(internalWidth);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// -------------------- HUD elements --------------------
+const healthText = document.getElementById('healthText');
+const ammoText = document.getElementById('ammoText');
+const enemyText = document.getElementById('enemyText');
+const levelText = document.getElementById('levelText');
+const startOverlay = document.getElementById('startOverlay');
+const startButton = document.getElementById('startButton');
+const levelTextOverlay = document.getElementById('levelTextOverlay');
+const levelSelectBtn = document.getElementById('levelSelectBtn');
+
+// -------------------- Map & levels --------------------
+const wallColors = {
+  1: '#5566ff',
+  2: '#ff00ff',
+  3: '#aa5533',
+  4: '#888888',
+  5: '#663300',
+  6: '#00e5ff',
+  7: '#444466'
+};
+
+function safeMapBuilder(builder){
+  try {
+    const m = builder();
+    if(!Array.isArray(m)) throw new Error('Map builder did not return an array');
+    return m;
+  } catch (err) {
+    console.error('Map builder error:', err);
+    const w = 16, h = 16;
+    const fallback = new Array(w*h).fill(0);
+    for(let x=0;x<w;x++){ fallback[x]=1; fallback[(h-1)*w+x]=1; }
+    for(let y=0;y<h;y++){ fallback[y*w]=1; fallback[y*w+w-1]=1; }
+    return fallback;
+  }
+}
+
+const levels = [
+  {
+    name: 'Training Grounds',
+    w: 16, h: 16,
+    map: safeMapBuilder(()=>[
+      1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+      1,0,0,0,0,0,0,2,2,0,0,0,0,0,0,1,
+      1,0,5,0,0,0,0,0,0,0,0,0,5,0,0,1,
+      1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,
+      1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,6,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+      1,0,0,0,4,0,0,0,0,0,0,4,0,0,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,5,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+      1,0,5,0,0,0,0,0,0,0,0,0,5,0,0,1,
+      1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,
+      1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,
+      1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+      1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+    ]),
+    playerStart:{x:3.5,y:3.5,dir:0},
+    enemies:[
+      {x:10.5,y:10.5,type:'grunt'},
+      {x:12.5,y:4.5,type:'fast'},
+      {x:4.5,y:10.5,type:'ranged'}
+    ]
+  },
+  {
+    name:'Corridor Clash',
+    w:18,h:18,
+    map: safeMapBuilder(()=> {
+      const w=18,h=18; const m=new Array(w*h).fill(0);
+      for(let x=0;x<w;x++){m[x]=1; m[(h-1)*w+x]=1;}
+      for(let y=0;y<h;y++){m[y*w]=1; m[y*w+w-1]=1;}
+      for(let y=2;y<h-2;y++){ m[y*w+4]=1; m[y*w+8]=1; m[y*w+12]=1; }
+      m[3*w+6]=5; m[6*w+14]=5; m[10*w+2]=6; m[13*w+9]=6;
+      return m;
+    }),
+    playerStart:{x:2.5,y:2.5,dir:0.3},
+    enemies:[
+      {x:8.5,y:8.5,type:'grunt'},
+      {x:13.5,y:3.5,type:'fast'},
+      {x:13.5,y:14.5,type:'ranged'},
+      {x:4.5,y:14.5,type:'tank'}
+    ]
+  },
+  {
+    name:'Pillars of Doom',
+    w:20,h:20,
+    map: safeMapBuilder(()=> {
+      const w=20,h=20; const m=new Array(w*h).fill(0);
+      for(let x=0;x<w;x++){m[x]=1; m[(h-1)*w+x]=1;}
+      for(let y=0;y<h;y++){m[y*w]=1; m[y*w+w-1]=1;}
+      for(let y=3;y<h-3;y+=3){
+        for(let x=3;x<w-3;x+=3){
+          m[y*w+x]=4;
+        }
+      }
+      for(let x=5;x<15;x++){ m[6*w+x]=2; m[13*w+x]=2; }
+      m[8*w+8]=5; m[9*w+11]=5; m[12*w+6]=5;
+      return m;
+    }),
+    playerStart:{x:3.5,y:3.5,dir:0.5},
+    enemies:[
+      {x:8.5,y:8.5,type:'fast'},
+      {x:12.5,y:4.5,type:'ranged'},
+      {x:12.5,y:12.5,type:'tank'},
+      {x:4.5,y:12.5,type:'grunt'},
+      {x:8.5,y:4.5,type:'neon'}
+    ]
+  },
+  {
+    name:'Boss: Neon Overlord',
+    w:20,h:20,
+    map: safeMapBuilder(()=> {
+      const w=20,h=20; const m=new Array(w*h).fill(0);
+      for(let x=0;x<w;x++){m[x]=1; m[(h-1)*w+x]=1;}
+      for(let y=0;y<h;y++){m[y*w]=1; m[y*w+w-1]=1;}
+      const cx=10,cy=10;
+      for(let r=2;r<=4;r++){
+        for(let a=0;a<360;a+=30){
+          const rad=a*Math.PI/180;
+          const px=Math.round(cx + Math.cos(rad)*r);
+          const py=Math.round(cy + Math.sin(rad)*r);
+          if(px>1 && py>1 && px<w-1 && py<h-1) m[py*w+px]=4;
+        }
+      }
+      m[3*w+3]=5; m[3*w+16]=5; m[16*w+3]=5; m[16*w+16]=5;
+      m[2*w+10]=6; m[17*w+10]=6;
+      return m;
+    }),
+    playerStart:{x:10.5,y:17.5,dir:-Math.PI/2},
+    enemies:[
+      {x:10.5,y:10.5,type:'boss'}
+    ]
+  }
+];
+
+// -------------------- Game state --------------------
+let currentLevelIndex = 0;
+let mapWidth = 16, mapHeight = 16, worldMap = [];
+
+const player = {
+  x:3.5,y:3.5,dir:0,pitch:0,fov:Math.PI/3,moveSpeed:3.2,rotSpeed:2.8,health:100,ammo:36, maxAmmo:60,
+  z:0, vy:0, onGround:true, jumpStrength:6
+};
+
+let gunRecoil = 0, muzzleFlash = 0;
+let pointerLocked = false;
+let running = false;
+let lastTime = performance.now();
+
+// -------------------- Input --------------------
+const keys = {w:false,a:false,s:false,d:false,left:false,right:false};
+document.addEventListener('keydown', e=>{
+  if(e.code==='KeyW') keys.w=true;
+  if(e.code==='KeyA') keys.a=true;
+  if(e.code==='KeyS') keys.s=true;
+  if(e.code==='KeyD') keys.d=true;
+  if(e.code==='ArrowLeft') keys.left=true;
+  if(e.code==='ArrowRight') keys.right=true;
+  if(e.code==='KeyR') reload();
+  if(e.code==='Space') tryJump();
+});
+document.addEventListener('keyup', e=>{
+  if(e.code==='KeyW') keys.w=false;
+  if(e.code==='KeyA') keys.a=false;
+  if(e.code==='KeyS') keys.s=false;
+  if(e.code==='KeyD') keys.d=false;
+  if(e.code==='ArrowLeft') keys.left=false;
+  if(e.code==='ArrowRight') keys.right=false;
+});
+
+// pointer lock & mouse (pitch added)
+canvas.addEventListener('click', ()=>{
+  if(!pointerLocked) canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', ()=>{ pointerLocked = (document.pointerLockElement === canvas); });
+document.addEventListener('mousemove', e=>{
+  if(!pointerLocked) return;
+  const sens = 0.0025;
+  player.dir += e.movementX * sens;
+  player.pitch -= e.movementY * sens; // invert Y for natural feel
+  // clamp pitch to avoid flipping
+  const maxPitch = Math.PI/4;
+  if(player.pitch > maxPitch) player.pitch = maxPitch;
+  if(player.pitch < -maxPitch) player.pitch = -maxPitch;
+});
+document.addEventListener('mousedown', e=>{
+  if(!pointerLocked) return;
+  if(e.button===0) shoot();
+});
+
+// -------------------- Entities --------------------
+const enemies = [];
+const projectiles = [];
+const ammoDrops = [];
+const crates = [];
+
+const enemyTypes = {
+  grunt:  {hp:50, speed:1.0, color:'#ff4081', damage:10},
+  fast:   {hp:35, speed:1.8, color:'#ffdd55', damage:8},
+  tank:   {hp:120,speed:0.6, color:'#55aaff', damage:18},
+  ranged: {hp:45, speed:1.0, color:'#aaff66', damage:6, ranged:true, fireRate:1.6},
+  neon:   {hp:70, speed:1.2, color:'#00e5ff', damage:12},
+  boss:   {hp:800, speed:0.5, color:'#ff8800', damage:25, boss:true}
+};
+
+// -------------------- Utility: find free position --------------------
+function isPositionBlocked(x,y, radius=0.35){
+  // walls
+  if(isWall(x,y)) return true;
+  // crates
+  for(const c of crates){
+    const dx = x - c.x, dy = y - c.y;
+    if(Math.hypot(dx,dy) < radius + 0.45) return true;
+  }
+  // enemies (optional) - allow stacking a bit
+  return false;
+}
+
+// find nearest free spot around (x,y) within radius steps
+function findFreeSpot(x,y, maxRadius=3, step=0.5){
+  if(!isPositionBlocked(x,y,0.35)) return {x,y};
+  for(let r=step; r<=maxRadius; r+=step){
+    for(let a=0; a<Math.PI*2; a+=Math.PI/6){
+      const nx = x + Math.cos(a)*r;
+      const ny = y + Math.sin(a)*r;
+      if(!isPositionBlocked(nx,ny,0.35)) return {x:nx,y:ny};
+    }
+  }
+  // fallback: return original but caller should handle
+  return {x,y};
+}
+
+// spawn enemy but ensure not inside wall/crate
+function spawnEnemy(x,y,type='grunt'){
+  const spot = findFreeSpot(x,y,3,0.5);
+  const t = enemyTypes[type] || enemyTypes.grunt;
+  enemies.push({
+    x:spot.x,y:spot.y,type,health:t.hp,maxHealth:t.hp,speed:t.speed,color:t.color,
+    state:'idle',anim:Math.random()*2,aiTimer:0,fireCooldown:0,phase:1
+  });
+}
+
+// crates spawn from map; crates are physical obstacles
+function spawnCrate(x,y){
+  crates.push({x:x,y:y,health:30});
+}
+
+function spawnAmmoDrop(x,y,amount){
+  ammoDrops.push({x,y,amount,anim:Math.random()*2});
+}
+
+function spawnProjectile(x,y,dx,dy,owner,life=3,speed=6,damage=8){
+  projectiles.push({x,y,dx,dy,owner,life,speed,damage});
+}
+
+// -------------------- Map helpers --------------------
+function loadLevel(index){
+  if(index < 0 || index >= levels.length) index = 0;
+  const lvl = levels[index];
+  currentLevelIndex = index;
+  mapWidth = lvl.w; mapHeight = lvl.h;
+  worldMap = lvl.map.slice();
+  player.x = lvl.playerStart.x; player.y = lvl.playerStart.y; player.dir = lvl.playerStart.dir;
+  player.pitch = 0; player.z = 0; player.vy = 0; player.onGround = true;
+  player.health = 100;
+  player.ammo = Math.min(player.maxAmmo, player.ammo + 18);
+  enemies.length = 0; projectiles.length = 0; ammoDrops.length = 0; crates.length = 0;
+  for(const e of lvl.enemies) spawnEnemy(e.x,e.y,e.type);
+  for(let y=0;y<mapHeight;y++){
+    for(let x=0;x<mapWidth;x++){
+      if(worldMap[y*mapWidth+x] === 5) spawnCrate(x+0.5,y+0.5);
+    }
+  }
+  showLevelText(`Level ${index+1}: ${lvl.name}`);
+}
+
+function isWall(x,y){
+  const mx = x|0, my = y|0;
+  if(mx<0||my<0||mx>=mapWidth||my>=mapHeight) return true;
+  const v = worldMap[my*mapWidth+mx];
+  return v===1 || v===2 || v===3 || v===7;
+}
+
+// -------------------- Raycasting --------------------
+function raycastWall(angle,maxDist){
+  const sin = Math.sin(angle), cos = Math.cos(angle);
+  let x = player.x, y = player.y, dist=0;
+  const step = 0.02;
+  while(dist < maxDist){
+    x += cos*step; y += sin*step; dist += step;
+    if(isWall(x,y)) return dist;
+  }
+  return maxDist;
+}
+
+// -------------------- Shooting & damage --------------------
+function shoot(){
+  if(player.ammo <= 0 || player.health <= 0) return;
+  player.ammo--;
+  gunRecoil = 1; muzzleFlash = 0.08;
+  const rayAngle = player.dir;
+  const maxDist = 30;
+  const wallDist = raycastWall(rayAngle,maxDist);
+
+  let closest = null, closestDist = maxDist;
+  for(const e of enemies){
+    if(e.health <= 0) continue;
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist > wallDist + 0.15) continue;
+    const angleTo = Math.atan2(dy,dx);
+    let diff = angleTo - rayAngle; diff = (diff + Math.PI)%(2*Math.PI)-Math.PI;
+    const aimTol = 0.06;
+    if(Math.abs(diff) < aimTol && dist < closestDist){
+      closestDist = dist; closest = e;
+    }
+  }
+
+  if(closest){
+    // headshot detection: simulate head region by random chance and distance
+    const headChance = 0.28;
+    const isHead = Math.random() < headChance;
+    const baseDamage = 28;
+    const damage = isHead ? Math.round(baseDamage*1.9) : baseDamage;
+    closest.health -= damage;
+    closest.aiTimer = 0.2;
+    if(closest.health <= 0) onEnemyDeath(closest);
+  } else {
+    // optionally, if no enemy hit but crate in front, damage crate
+    // cast along ray and check crate cell
+    const step = 0.05;
+    let x = player.x, y = player.y, dist = 0;
+    while(dist < maxDist){
+      x += Math.cos(rayAngle)*step; y += Math.sin(rayAngle)*step; dist += step;
+      // check crates
+      for(const c of crates){
+        if(Math.hypot(c.x - x, c.y - y) < 0.5){
+          c.health -= 20;
+          if(c.health <= 0){
+            spawnAmmoDrop(c.x, c.y, 6 + (Math.random()*8|0));
+            const idx = crates.indexOf(c);
+            if(idx>=0) crates.splice(idx,1);
+          }
+          dist = maxDist; break;
+        }
+      }
+      if(isWall(x,y)) break;
+    }
+  }
+}
+
+function onEnemyDeath(enemy){
+  const dropChance = enemy.type === 'tank' ? 0.9 : (enemy.type==='boss'?1.0:0.6);
+  if(Math.random() < dropChance){
+    const amount = enemy.type==='boss' ? 60 : (enemy.type==='tank'?25:10 + (Math.random()*12|0));
+    spawnAmmoDrop(enemy.x, enemy.y, amount);
+  }
+  if(enemy.type === 'boss'){
+    showLevelText('Boss defeated! You win!');
+    running = false;
+    setTimeout(()=>{ window.location.href = 'index.html'; }, 3000);
+  }
+}
+
+function reload(){
+  const need = player.maxAmmo - player.ammo;
+  if(need <= 0) return;
+  player.ammo = player.maxAmmo;
+}
+
+// -------------------- Jump --------------------
+function tryJump(){
+  if(player.onGround){
+    player.vy = player.jumpStrength;
+    player.onGround = false;
+  }
+}
+
+// -------------------- Enemy AI & projectiles --------------------
+function updateEnemies(dt){
+  for(const e of enemies){
+    if(e.health <= 0) continue;
+    e.anim += dt*4;
+    e.aiTimer -= dt;
+    if(e.fireCooldown > 0) e.fireCooldown -= dt;
+
+    if(e.type === 'boss'){
+      const hpRatio = e.health / e.maxHealth;
+      if(hpRatio < 0.6) e.phase = 2;
+      if(hpRatio < 0.3) e.phase = 3;
+      e.aiTimer -= dt;
+      if(e.aiTimer <= 0){
+        if(Math.random() < 0.25){
+          const shots = e.phase === 3 ? 18 : (e.phase === 2 ? 12 : 8);
+          for(let i=0;i<shots;i++){
+            const ang = (i/shots)*Math.PI*2 + Math.random()*0.2;
+            spawnProjectile(e.x, e.y, Math.cos(ang), Math.sin(ang), e, 3.5, 5, 18);
+          }
+        }
+        const dx = player.x - e.x, dy = player.y - e.y;
+        const dist = Math.hypot(dx,dy);
+        if(dist > 1.8){
+          const nx = e.x + (dx/dist) * e.speed * dt * (e.phase===3?1.4:1);
+          const ny = e.y + (dy/dist) * e.speed * dt * (e.phase===3?1.4:1);
+          // avoid crates/walls
+          if(!isPositionBlocked(nx, e.y, 0.35)) e.x = nx;
+          if(!isPositionBlocked(e.x, ny, 0.35)) e.y = ny;
+        }
+        e.aiTimer = 0.8 + Math.random()*1.2;
+      }
+      continue;
+    }
+
+    if(e.type === 'ranged'){
+      const dx = player.x - e.x, dy = player.y - e.y;
+      const dist = Math.hypot(dx,dy);
+      const angleTo = Math.atan2(dy,dx);
+      const wallDist = raycastWall(angleTo, 30);
+      if(dist < 12 && dist < wallDist - 0.2){
+        if(e.fireCooldown <= 0){
+          const dirx = dx/dist, diry = dy/dist;
+          spawnProjectile(e.x, e.y, dirx, diry, e, 3.5, 7, enemyTypes.ranged.damage);
+          e.fireCooldown = enemyTypes.ranged.fireRate;
+        }
+      }
+    }
+
+    if(e.aiTimer <= 0){
+      const dx = player.x - e.x, dy = player.y - e.y;
+      const dist = Math.hypot(dx,dy);
+      if(dist > 0.6 && dist < 12){
+        const nx = e.x + (dx/dist) * e.speed * dt;
+        const ny = e.y + (dy/dist) * e.speed * dt;
+        if(!isPositionBlocked(nx, e.y, 0.35)) e.x = nx;
+        if(!isPositionBlocked(e.x, ny, 0.35)) e.y = ny;
+      }
+      e.aiTimer = 0.05;
+    }
+  }
+}
+
+function updateProjectiles(dt){
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i];
+    p.life -= dt;
+    if(p.life <= 0){ projectiles.splice(i,1); continue; }
+    p.x += p.dx * p.speed * dt;
+    p.y += p.dy * p.speed * dt;
+    if(isWall(p.x,p.y)){ projectiles.splice(i,1); continue; }
+    // hit player
+    if(p.owner && p.owner.type && p.owner.type !== 'player'){
+      const dx = player.x - p.x, dy = player.y - p.y;
+      if(Math.hypot(dx,dy) < 0.5){
+        player.health -= p.damage;
+        projectiles.splice(i,1);
+        continue;
+      }
+    }
+    // hit crates
+    for(let j=crates.length-1;j>=0;j--){
+      const c = crates[j];
+      if(Math.hypot(c.x - p.x, c.y - p.y) < 0.6){
+        c.health -= p.damage;
+        projectiles.splice(i,1);
+        break;
+      }
+    }
+  }
+}
+
+// -------------------- Crates processing --------------------
+function processCrates(){
+  for(let i=crates.length-1;i>=0;i--){
+    if(crates[i].health <= 0){
+      const c = crates[i];
+      spawnAmmoDrop(c.x, c.y, 6 + (Math.random()*8|0));
+      crates.splice(i,1);
+    }
+  }
+}
+
+// -------------------- Collision helpers --------------------
+function isPositionBlocked(x,y, radius=0.35){
+  if(isWall(x,y)) return true;
+  for(const c of crates){
+    if(Math.hypot(x - c.x, y - c.y) < radius + 0.45) return true;
+  }
+  return false;
+}
+
+// -------------------- Game update --------------------
+function update(dt){
+  // movement & collision (2D)
+  let mx=0,my=0;
+  const cos = Math.cos(player.dir), sin = Math.sin(player.dir);
+  if(keys.w){ mx += cos; my += sin; }
+  if(keys.s){ mx -= cos; my -= sin; }
+  if(keys.a){ mx += sin; my -= cos; }
+  if(keys.d){ mx -= sin; my += cos; }
+  const len = Math.hypot(mx,my);
+  if(len>0){ mx/=len; my/=len; }
+  const step = player.moveSpeed * dt;
+  let nx = player.x + mx*step, ny = player.y + my*step;
+  // check collisions with walls and crates
+  if(!isPositionBlocked(nx, player.y, 0.35)) player.x = nx;
+  if(!isPositionBlocked(player.x, ny, 0.35)) player.y = ny;
+
+  if(keys.left) player.dir -= player.rotSpeed * dt;
+  if(keys.right) player.dir += player.rotSpeed * dt;
+
+  // vertical physics (jump/gravity)
+  const gravity = -18; // negative because we treat vy positive upward
+  player.vy += gravity * dt;
+  player.z += player.vy * dt;
+  if(player.z <= 0){
+    player.z = 0;
+    player.vy = 0;
+    player.onGround = true;
+  } else {
+    player.onGround = false;
+  }
+
+  updateEnemies(dt);
+  updateProjectiles(dt);
+  processCrates();
+
+  for(let i=ammoDrops.length-1;i>=0;i--){
+    const d = ammoDrops[i];
+    const dist = Math.hypot(player.x - d.x, player.y - d.y);
+    if(dist < 0.6){
+      player.ammo = Math.min(player.maxAmmo, player.ammo + d.amount);
+      ammoDrops.splice(i,1);
+    }
+  }
+
+  if(gunRecoil > 0) gunRecoil = Math.max(0, gunRecoil - dt*6);
+  if(muzzleFlash > 0) muzzleFlash = Math.max(0, muzzleFlash - dt);
+
+  healthText.textContent = Math.max(0, Math.round(player.health));
+  ammoText.textContent = player.ammo;
+  enemyText.textContent = enemies.filter(e=>e.health>0).length;
+  levelText.textContent = (currentLevelIndex+1);
+
+  if(player.health <= 0){
+    running = false;
+    showLevelText('You Died — Returning to Menu');
+    setTimeout(()=>{ window.location.href='index.html'; }, 2200);
+  } else if(enemies.every(e=>e.health<=0)){
+    if(levels[currentLevelIndex].name.toLowerCase().includes('boss')){
+      // boss handled on death
+    } else {
+      nextLevel();
+    }
+  }
+}
+
+// -------------------- Rendering --------------------
+function shadeColor(hex, shade){
+  const r = parseInt(hex.substr(1,2),16);
+  const g = parseInt(hex.substr(3,2),16);
+  const b = parseInt(hex.substr(5,2),16);
+  return `rgb(${(r*shade)|0},${(g*shade)|0},${(b*shade)|0})`;
+}
+
+function render(){
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,internalWidth,internalHeight);
+
+  // horizon offset by pitch (look up/down)
+  const pitchOffset = player.pitch * (internalHeight * 0.25); // scale pitch to pixels
+  const horizon = internalHeight/2 + pitchOffset;
+  ctx.fillStyle = '#120033';
+  ctx.fillRect(0,0,internalWidth,horizon);
+  ctx.fillStyle = '#201010';
+  ctx.fillRect(0,horizon,internalWidth,horizon);
+
+  // walls
+  const numRays = internalWidth;
+  const maxDist = 40;
+  for(let x=0;x<numRays;x++){
+    const rayScreenPos = (x/numRays) - 0.5;
+    const rayAngle = player.dir + rayScreenPos * player.fov;
+    const dist = raycastWall(rayAngle, maxDist);
+    const diff = rayAngle - player.dir;
+    const corrected = dist * Math.cos(diff);
+    zBuffer[x] = corrected;
+    const wallHeight = (internalHeight / Math.max(0.0001, corrected)) * 0.9;
+    const start = (horizon) - wallHeight/2;
+    const hitX = player.x + Math.cos(rayAngle) * dist;
+    const hitY = player.y + Math.sin(rayAngle) * dist;
+    const mx = hitX|0, my = hitY|0;
+    const cell = (mx>=0 && my>=0 && mx<mapWidth && my<mapHeight) ? worldMap[my*mapWidth+mx] : 1;
+    const base = wallColors[cell] || '#999999';
+    const shade = Math.max(0.15, 1 - corrected / maxDist);
+    ctx.fillStyle = shadeColor(base, shade);
+    ctx.fillRect(x, start, 1, wallHeight);
+    if(cell === 2){
+      ctx.fillStyle = `rgba(255,0,255,${Math.min(0.25, (1-shade)*0.6)})`;
+      ctx.fillRect(x, start, 1, wallHeight);
+    }
+  }
+
+  // crates (depth-tested)
+  for(const c of crates){
+    const dx = c.x - player.x, dy = c.y - player.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 0.1) continue;
+    const angleTo = Math.atan2(dy,dx);
+    let angleDiff = angleTo - player.dir; angleDiff = (angleDiff + Math.PI)%(2*Math.PI)-Math.PI;
+    const halfFov = player.fov/2;
+    if(angleDiff < -halfFov || angleDiff > halfFov) continue;
+    const size = (internalHeight / dist) * 0.45;
+    const screenX = (0.5 + (angleDiff / player.fov)) * internalWidth;
+    const screenY = horizon + internalHeight*0.08;
+    const left = screenX - size/2, top = screenY - size/2;
+    const startX = Math.max(0, left|0), endX = Math.min(internalWidth, (left+size)|0);
+    for(let x=startX;x<endX;x++){
+      if(dist < zBuffer[x]){
+        ctx.fillStyle = '#6b3f1b';
+        ctx.fillRect(x, top, 1, size);
+      }
+    }
+  }
+
+  // enemies
+  for(const e of enemies){
+    if(e.health <= 0) continue;
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 0.1) continue;
+    const angleTo = Math.atan2(dy,dx);
+    let angleDiff = angleTo - player.dir; angleDiff = (angleDiff + Math.PI)%(2*Math.PI)-Math.PI;
+    const halfFov = player.fov/2;
+    if(angleDiff < -halfFov || angleDiff > halfFov) continue;
+    const size = (internalHeight / dist) * (e.type==='boss'?1.6:0.9);
+    const screenX = (0.5 + (angleDiff / player.fov)) * internalWidth;
+    const screenY = horizon;
+    const w = size, h = size * (e.type==='boss'?2.2:2.0);
+    const left = screenX - w/2, top = screenY - h/2;
+    const startX = Math.max(0, left|0), endX = Math.min(internalWidth, (left+w)|0);
+    const headH = h*0.22, torsoH = h*0.5, legsH = h*0.28;
+    for(let x=startX;x<endX;x++){
+      if(dist < zBuffer[x]){
+        ctx.fillStyle = e.color;
+        ctx.fillRect(x, top, 1, headH);
+        ctx.fillStyle = e.type==='neon' ? 'rgba(0,229,255,0.9)' : '#ffffff22';
+        ctx.fillRect(x, top+headH, 1, torsoH);
+        ctx.fillStyle = '#000000aa';
+        ctx.fillRect(x, top+headH+torsoH, 1, legsH);
+      }
+    }
+    const barW = Math.max(20, w*0.6);
+    const bx = screenX - barW/2, by = top - 8;
+    ctx.fillStyle = '#000000cc';
+    ctx.fillRect(bx, by, barW, 5);
+    const hpRatio = Math.max(0, e.health / e.maxHealth);
+    ctx.fillStyle = e.type==='boss' ? '#ff8844' : '#ff4444';
+    ctx.fillRect(bx, by, barW * hpRatio, 5);
+  }
+
+  // ammo drops
+  for(const d of ammoDrops){
+    const dx = d.x - player.x, dy = d.y - player.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 0.1) continue;
+    const angleTo = Math.atan2(dy,dx);
+    let angleDiff = angleTo - player.dir; angleDiff = (angleDiff + Math.PI)%(2*Math.PI)-Math.PI;
+    const halfFov = player.fov/2;
+    if(angleDiff < -halfFov || angleDiff > halfFov) continue;
+    const size = (internalHeight / dist) * 0.35;
+    const screenX = (0.5 + (angleDiff / player.fov)) * internalWidth;
+    const screenY = horizon + internalHeight*0.08;
+    const left = screenX - size/2, top = screenY - size/2;
+    const startX = Math.max(0, left|0), endX = Math.min(internalWidth, (left+size)|0);
+    for(let x=startX;x<endX;x++){
+      if(dist < zBuffer[x]){
+        ctx.fillStyle = '#ffd760';
+        ctx.fillRect(x, top, 1, size);
+      }
+    }
+  }
+
+  // projectiles
+  for(const p of projectiles){
+    const dx = p.x - player.x, dy = p.y - player.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 0.1) continue;
+    const angleTo = Math.atan2(dy,dx);
+    let angleDiff = angleTo - player.dir; angleDiff = (angleDiff + Math.PI)%(2*Math.PI)-Math.PI;
+    const halfFov = player.fov/2;
+    if(angleDiff < -halfFov || angleDiff > halfFov) continue;
+    const size = (internalHeight / dist) * 0.08;
+    const screenX = (0.5 + (angleDiff / player.fov)) * internalWidth;
+    const screenY = horizon + internalHeight*0.02;
+    const left = screenX - size/2, top = screenY - size/2;
+    const startX = Math.max(0, left|0), endX = Math.min(internalWidth, (left+size)|0);
+    for(let x=startX;x<endX;x++){
+      if(dist < zBuffer[x]){
+        ctx.fillStyle = '#ffddaa';
+        ctx.fillRect(x, top, 1, size);
+      }
+    }
+  }
+
+  drawGun();
+}
+
+function drawGun(){
+  const gw = internalWidth * 0.28, gh = internalHeight * 0.36;
+  const bx = internalWidth/2 - gw/2, by = internalHeight - gh + 6;
+  const recoil = gunRecoil * 10;
+  ctx.fillStyle = '#111122';
+  ctx.fillRect(bx, by + recoil, gw, gh);
+  ctx.fillStyle = '#050515';
+  ctx.fillRect(bx + gw*0.36, by + gh*0.42 + recoil, gw*0.28, gh*0.58);
+  ctx.fillStyle = '#303060';
+  ctx.fillRect(bx + gw*0.26, by + recoil, gw*0.48, gh*0.24);
+  if(muzzleFlash > 0){
+    ctx.fillStyle = 'rgba(255,250,200,0.95)';
+    const fw = gw*0.28, fh = gh*0.18;
+    ctx.fillRect(internalWidth/2 - fw/2, by + recoil - fh, fw, fh);
+  }
+}
+
+// -------------------- Loop --------------------
+function loop(ts){
+  if(!running) return;
+  const dt = Math.min(0.05, (ts - lastTime)/1000);
+  lastTime = ts;
+  try {
+    update(dt);
+    render();
+  } catch (err) {
+    console.error('Error during game loop:', err);
+    alert('An error occurred during the game loop. Check console.');
+    running = false;
+    return;
+  }
+  requestAnimationFrame(loop);
+}
+
+// -------------------- Level flow --------------------
+function nextLevel(){
+  if(currentLevelIndex + 1 < levels.length){
+    loadLevel(currentLevelIndex + 1);
+  } else {
+    showLevelText('All levels cleared! Back to Menu');
+    running = false;
+    setTimeout(()=>{ window.location.href='index.html'; }, 2200);
+  }
+}
+
+function showLevelText(text){
+  levelTextOverlay.textContent = text;
+  levelTextOverlay.classList.add('visible');
+  setTimeout(()=> levelTextOverlay.classList.remove('visible'), 1800);
+}
+
+// -------------------- Start / UI --------------------
+startButton.addEventListener('click', ()=>{
+  startOverlay.style.display = 'none';
+  try {
+    loadLevel(0);
+    running = true;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.error('Failed to start game:', err);
+    alert('Failed to start the game. See console for details.');
+  }
+});
+levelSelectBtn.addEventListener('click', ()=>{
+  const names = levels.map((l,i)=>`${i+1}. ${l.name}`).join('\n');
+  const pick = prompt('Choose level number:\n' + names, '1');
+  const idx = Math.max(0, Math.min(levels.length-1, (parseInt(pick||'1',10)-1)));
+  if(!isNaN(idx)) {
+    startOverlay.style.display = 'none';
+    loadLevel(idx);
+    running = true;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  }
+});
+
+// -------------------- Initialize --------------------
+resizeCanvas();
+showLevelText('Welcome to OverKill');
+
+// Debug helper
+window.OverKillDebug = {
+  loadLevel: (i)=>{ loadLevel(i); running=true; lastTime=performance.now(); requestAnimationFrame(loop); },
+  enemies, projectiles, ammoDrops, crates, levels
+};
+console.log('OverKill initialized. Use OverKillDebug.loadLevel(n) to start a level from console if needed.');
+
+</script>
+</body>
+</html>
